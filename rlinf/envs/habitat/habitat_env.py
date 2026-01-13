@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import copy
+import os
 from typing import Optional, Union
 
 import gym
@@ -23,6 +24,7 @@ from habitat_baselines.config.default import get_config
 from hydra.core.global_hydra import GlobalHydra
 
 from rlinf.envs.habitat.extensions.utils import observations_to_image
+import rlinf.envs.habitat.extensions.custom_action
 from rlinf.envs.habitat.venv import HabitatRLEnv, ReconfigureSubprocEnv
 from rlinf.envs.utils import (
     list_of_dict_to_dict_of_list,
@@ -313,6 +315,7 @@ class HabitatEnv(gym.Env):
             terminations[:] = False
 
         dones = terminations | truncations
+        self._dones = dones
         _auto_reset = auto_reset and self.auto_reset
         if dones.any() and _auto_reset:
             obs, infos = self._handle_auto_reset(dones, obs, infos)
@@ -399,10 +402,30 @@ class HabitatEnv(gym.Env):
         else:
             return reward
 
-    def flush_video(self, video_name, video_frames):
+    # original fuction: flush_video(self, video_name, video_frames)
+    def __flush_video(self, video_name, video_frames):
         save_rollout_video(
             video_frames,
             output_dir=self.video_cfg.video_base_dir,
             video_name=video_name,
             fps=self.video_cfg.fps,
         )
+        print("="*100)
+        print(self.video_cfg.video_base_dir)
+    # new function: flush_video
+    def flush_video(self, video_sub_dir: Optional[str] = None):
+        output_dir = self.video_cfg.video_base_dir
+        if video_sub_dir is not None:
+            output_dir = os.path.join(output_dir, f"{video_sub_dir}")
+        dones_episode_ids = np.array(self.env.get_current_episode_ids())[self._dones]
+        print(f"dones: {self._dones}, dones_episode_ids: {dones_episode_ids}")
+        for episode_ids in dones_episode_ids:
+            video_name = f"episode_{episode_ids}"
+            save_rollout_video(
+                self.render_images[video_name],
+                output_dir=output_dir,
+                video_name=video_name,
+                fps=self.video_cfg.fps,
+            )
+            # clear done episode render_images
+            self.render_images[video_name] = []

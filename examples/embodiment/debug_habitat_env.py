@@ -40,12 +40,14 @@ def main(cfg):
     env.reset()
 
     n_chunk_steps = cfg.env.eval.max_episode_steps // cfg.actor.model.num_action_chunks
-    action_space = ["turn_left", "turn_right", "move_forward"]
+    action_space = ["no_op"]
+    # action_space = ["stop", "turn_left", "turn_right", "move_forward"]
 
     for i in range(n_chunk_steps):
         dummy_actions = np.random.choice(
             action_space, size=(num_envs, cfg.actor.model.num_action_chunks)
         )
+        print(dummy_actions)
         env.chunk_step(dummy_actions)
         print(f"step {i} done")
 
