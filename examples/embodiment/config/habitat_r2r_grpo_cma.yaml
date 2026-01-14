@@ -94,7 +94,7 @@ env:
     reset_gripper_open: False
   eval:
     total_num_envs: 512
-    auto_reset: False
+    auto_reset: True
     ignore_terminations: False
     max_episode_steps: 128
     max_steps_per_rollout_epoch: 64

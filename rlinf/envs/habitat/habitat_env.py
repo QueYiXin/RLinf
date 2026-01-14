@@ -318,6 +318,8 @@ class HabitatEnv(gym.Env):
         self._dones = dones
         _auto_reset = auto_reset and self.auto_reset
         if dones.any() and _auto_reset:
+            if self.video_cfg.save_video:
+                self.flush_video()
             obs, infos = self._handle_auto_reset(dones, obs, infos)
         return (
             obs,
@@ -338,7 +340,7 @@ class HabitatEnv(gym.Env):
         for i in range(chunk_size):
             actions = chunk_actions[:, i]
             extracted_obs, step_reward, terminations, truncations, infos = self.step(
-                actions, auto_reset=False
+                actions, auto_reset=self.auto_reset
             )
 
             chunk_rewards.append(step_reward)
@@ -357,10 +359,10 @@ class HabitatEnv(gym.Env):
         past_truncations = raw_chunk_truncations.any(dim=1)
         past_dones = torch.logical_or(past_terminations, past_truncations)
 
-        if past_dones.any() and self.auto_reset:
-            extracted_obs, infos = self._handle_auto_reset(
-                past_dones.cpu().numpy(), extracted_obs, infos
-            )
+        # if past_dones.any() and self.auto_reset:
+        #     extracted_obs, infos = self._handle_auto_reset(
+        #         past_dones.cpu().numpy(), extracted_obs, infos
+        #     )
 
         if self.auto_reset or self.ignore_terminations:
             chunk_terminations = torch.zeros_like(raw_chunk_terminations)
@@ -403,7 +405,7 @@ class HabitatEnv(gym.Env):
             return reward
 
     # original fuction: flush_video(self, video_name, video_frames)
-    def __flush_video(self, video_name, video_frames):
+    def flush_video_alive(self, video_name, video_frames):
         save_rollout_video(
             video_frames,
             output_dir=self.video_cfg.video_base_dir,

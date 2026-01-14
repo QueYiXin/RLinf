@@ -25,14 +25,13 @@ def get_gt_episode_ids(gt_dir_path: str):
     return episode_ids
 
 
-def load_actions_from_file(episode_ids: list, gt_dir_path: str):
+def load_actions_from_file(episode_ids: list, gt_dir_path: str, gt_episode_list):
     """
     从文件夹加载 JSON 动作序列
     如果存在episode不在里面,则返回空列表
     若均存在, 则返回对应输入episode_ids的action_list
     """
     action_list = []
-    gt_episode_list = get_gt_episode_ids(gt_dir_path)
 
     for episode_id in episode_ids:
         if episode_id not in gt_episode_list:
@@ -79,44 +78,47 @@ def test_habitat_env(cfg):
     print("="*60);print("reading files");print("="*60)
     episode_ids = env.env.get_current_episode_ids()
     print(episode_ids)
-    actions_lists = load_actions_from_file(episode_ids, action_dir_path)
+    gt_episode_ids = get_gt_episode_ids(action_dir_path)
+    actions_lists = load_actions_from_file(episode_ids, action_dir_path, gt_episode_ids)
 
     assert actions_lists, f"存在env中的episode在gt中没有数据"
-    stop_flag = 0
-    min_action_seq = min([len(seq) for seq in actions_lists])
+    env_idx_offset = [0]*num_envs
     print("="*60);print("End reading files");print("="*60)
     for i in range(n_loops):
-        start_idx = i * chunk_size
-        end_idx = (i + 1) * chunk_size
-        if end_idx >= min_action_seq:
-            stop_flag = 1
-            end_idx = min_action_seq
+        print("#"*60);print(f"below episodes:{episode_ids}, loop: {i}");print("#"*60)
         current_chunk_batch = []
+        stop_envs = [False]*num_envs
 
         for env_idx in range(num_envs):
             seq = actions_lists[env_idx]
+            start_idx = (i - env_idx_offset[env_idx]) * chunk_size
+            end_idx = (i + 1 - env_idx_offset[env_idx]) * chunk_size
             chunk = seq[start_idx:end_idx]
-            # if stop_flag:
-            #     chunk[-1] = "stop"
+            if len(chunk) < chunk_size and "stop" in chunk:
+                chunk.extend(["no_op"]*(chunk_size-len(chunk)))
+                stop_envs[env_idx] = True
             current_chunk_batch.append(chunk)
+            print("+"*60);print(f"step:{start_idx}->{end_idx-1}, actions: {chunk}")
 
         actions_to_step = np.array(current_chunk_batch)
-        print("-"*60)
-        print(actions_to_step)
-        print("-"*60)
 
         try:
             env.chunk_step(actions_to_step)
-            print(f"Step {i}: [{start_idx} to {end_idx}] executed.")
-            if stop_flag:
-                break
+            if True in stop_envs:
+                episode_ids = env.env.get_current_episode_ids()
+                for idx in range(len(stop_envs)):
+                    if stop_envs[idx]:
+                        actions_lists[idx] = load_actions_from_file([episode_ids[idx]], action_dir_path, gt_episode_ids)[0]
+                        env_idx_offset[idx] = i+1
+                        print("&"*60);print(f"env_{idx} action change to {actions_lists[idx][:5]}");print("&"*60)
+            
         except AssertionError:
             print(f"Step {i}: Environment terminated early.")
             break
 
-    # for video_name, video_frames in env.render_images.items():
-    #     env.flush_video(video_name, video_frames)
-    env.flush_video()
+    for video_name, video_frames in env.render_images.items():
+        env.flush_video_alive(video_name, video_frames)
+    print(f"running episodes: {episode_ids}")
 
 
 @hydra.main(version_base="1.1", config_path="config", config_name="habitat_r2r_grpo_cma")
