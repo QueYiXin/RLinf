@@ -23,10 +23,10 @@ import numpy as np
 import torch
 from habitat.core.embodied_task import SimulatorTaskAction
 from habitat.core.registry import registry
-from habitat_baselines.config.default import get_config
 from hydra.core.global_hydra import GlobalHydra
 
 from rlinf.envs.habitat.extensions import measures
+from rlinf.envs.habitat.extensions.config.task_config import get_config
 from rlinf.envs.habitat.extensions.utils import (
     observations_to_image,
     resize_observation_images,
@@ -80,7 +80,7 @@ class HabitatEnv(gym.Env):
         self.render_images = {}
         self.current_raw_obs = None
 
-        self.env_config = self.env.get_env_attr("config")[0]
+        self.env_config = get_config(self.cfg.init_params.config_path)
         self.initial_distance_to_goal = np.zeros(self.num_envs)
 
     @property
@@ -107,12 +107,12 @@ class HabitatEnv(gym.Env):
 
         # Truncate chunk if it contains "stop" and pad with "no_op"
         for env_idx, chunk_action in enumerate(chunk_actions):
-            stop_idx = np.where(chunk_action == "stop")[0]
+            stop_idx = np.where(chunk_action == "STOP")[0]
             if len(stop_idx) > 0:
                 stop_idx = stop_idx[0] + 1
                 truncated_chunk = chunk_action[:stop_idx].copy()
                 chunk_actions[env_idx] = np.concatenate(
-                    [truncated_chunk, ["no_op"] * (chunk_size - len(truncated_chunk))]
+                    [truncated_chunk, ["NO_OP"] * (chunk_size - len(truncated_chunk))]
                 )
 
         # Truncate chunk if it would exceed max_episode_steps and pad with "no_op"
@@ -120,14 +120,14 @@ class HabitatEnv(gym.Env):
             if elapsed_step + chunk_size >= self.max_episode_steps:
                 reserved_idx = self.max_episode_steps - elapsed_step
                 if reserved_idx <= 0:
-                    chunk_actions[env_idx] = np.array(["no_op"] * chunk_size)
+                    chunk_actions[env_idx] = np.array(["NO_OP"] * chunk_size)
                     continue
                 truncated_chunk = chunk_actions[env_idx][:reserved_idx].copy()
-                truncated_chunk[reserved_idx - 1] = "stop"
+                truncated_chunk[reserved_idx - 1] = "STOP"
                 chunk_actions[env_idx] = np.concatenate(
                     [
                         truncated_chunk,
-                        ["no_op"] * (chunk_size - len(truncated_chunk)),
+                        ["NO_OP"] * (chunk_size - len(truncated_chunk)),
                     ]
                 )
 
@@ -178,11 +178,10 @@ class HabitatEnv(gym.Env):
         # Replace "stop" with "no_op" before stepping the underlying env to avoid unable
         # to process the next action.
         actions = actions.astype("U12")
-        is_stop = actions == "stop"
-        actions[is_stop] = "no_op"
+        is_stop = actions == "STOP"
+        actions[is_stop] = "NO_OP"
 
         raw_obs, _reward, terminations, info_lists = self.env.step(actions)
-
         # If some envs execute "no_op", manually normalize depth observations
         # according to Habitat's depth sensor config.
         self._normalize_depth(actions, raw_obs)
@@ -300,16 +299,16 @@ class HabitatEnv(gym.Env):
         """Normalize depth for envs whose action is 'no_op', following
         Habitat's depth sensor configuration.
         """
-        is_no_op = actions == "no_op"
+        is_no_op = actions == "NO_OP"
         if not np.any(is_no_op):
             return
 
-        depth_cfg = self.env_config.simulator.agents.main_agent.sim_sensors.depth_sensor
-        if not getattr(depth_cfg, "normalize_depth", False):
+        depth_cfg = self.env_config.SIMULATOR.DEPTH_SENSOR
+        if not getattr(depth_cfg, "NORMALIZE_DEPTH", False):
             return
 
-        min_depth = float(depth_cfg.min_depth)
-        max_depth = float(depth_cfg.max_depth)
+        min_depth = float(depth_cfg.MIN_DEPTH)
+        max_depth = float(depth_cfg.MAX_DEPTH)
 
         for env_idx, flag_no_op in enumerate(is_no_op):
             if not flag_no_op:
@@ -376,7 +375,7 @@ class HabitatEnv(gym.Env):
 
     def _record_metrics(self, infos):
         episode_info = {}
-        dist_threshold = self.env_config.task.measurements.success.success_distance
+        dist_threshold = self.env_config.TASK.SUCCESS_DISTANCE
 
         episode_info["distance_to_goal"] = np.array(
             infos["distance_to_goal"], dtype=np.float32
@@ -476,8 +475,8 @@ class HabitatEnv(gym.Env):
                 config = get_config(config_path)
 
                 dataset = habitat.datasets.make_dataset(
-                    config.habitat.dataset.type,
-                    config=config.habitat.dataset,
+                    config.DATASET.TYPE,
+                    config=config.DATASET,
                 )
 
                 dataset.episodes = [
@@ -503,18 +502,13 @@ class HabitatEnv(gym.Env):
             GlobalHydra.instance().clear()
 
         config_path = self.cfg.init_params.config_path
-        params_dict = self.cfg.init_params.params_dict
-        params_list = []
-        for k, v in params_dict.items():
-            params_list.extend([k, v])
-        habitat_config = get_config(config_path, opts=params_list)
-
-        habitat_dataset = habitat.datasets.make_dataset(
-            habitat_config.habitat.dataset.type,
-            config=habitat_config.habitat.dataset,
+        task_config = get_config(config_path)
+        dataset = habitat.datasets.make_dataset(
+            task_config.DATASET.TYPE,
+            config=task_config.DATASET,
         )
 
-        episode_ids = self._build_ordered_episodes(habitat_dataset)
+        episode_ids = self._build_ordered_episodes(dataset)
 
         episode_ranges = []
         num_episodes = len(episode_ids)

@@ -1,70 +1,67 @@
 # @package _global_
+SEED: 12
+ENVIRONMENT:
+  MAX_EPISODE_STEPS: 500
+  ITERATOR_OPTIONS:
+    MAX_SCENE_REPEAT_STEPS: 50000
+    SHUFFLE: True
+SIMULATOR:
+  ACTION_SPACE_CONFIG: v0
+  AGENTS: ['AGENT_0']
+  AGENT_0:
+    SENSORS: ['RGB_SENSOR', 'DEPTH_SENSOR']
+  FORWARD_STEP_SIZE: 0.25
+  TURN_ANGLE: 15
+  HABITAT_SIM_V0:
+    GPU_DEVICE_ID: 0
+    ALLOW_SLIDING: True
+  RGB_SENSOR:
+    TYPE: HabitatSimRGBSensor
+    WIDTH: 224
+    HEIGHT: 224
+    HFOV: 90
+  DEPTH_SENSOR:
+    TYPE: HabitatSimDepthSensor
+    WIDTH: 256
+    HEIGHT: 256
+    HFOV: 90
+    MIN_DEPTH: 0.0
+    MAX_DEPTH: 10.0
+    NORMALIZE_DEPTH: True
 
-defaults:
-  - /habitat: habitat_config_base
-  - /habitat/task: vln_r2r
-  - /habitat/simulator/agents@habitat.simulator.agents.main_agent: agent_base
-  # - /habitat/simulator/sensor_setups@habitat.simulator.agents.main_agent: rgbd_agent
-  - /habitat/dataset/vln: mp3d_r2r
-  - /habitat/task/lab_sensors:
-    - gps_sensor
-    - compass_sensor
-  - /habitat/task/measurements:
-    - top_down_map
-  - _self_
+TASK:
+  ACTIONS:
+    NO_OP:
+      TYPE: NoOpAction
+  SUCCESS_DISTANCE: 3.0
+  POSSIBLE_ACTIONS: [STOP, MOVE_FORWARD, TURN_LEFT, TURN_RIGHT, NO_OP]
+  SENSORS: [
+    INSTRUCTION_SENSOR
+  ]
+  INSTRUCTION_SENSOR_UUID: instruction
+  MEASUREMENTS: [
+    TOP_DOWN_MAP,
+    DISTANCE_TO_GOAL,
+    SUCCESS,
+    SPL,
+    TRAJECTORY_LENGTH,
+    ORACLE_SUCCESS,
+    ORACLE_NAVIGATION_ERROR
+  ]
+  SUCCESS:
+    SUCCESS_DISTANCE: 3.0
+  SPL:
+    SUCCESS_DISTANCE: 3.0
+  TRAJECTORY_LENGTH:
+    TYPE: TrajectoryLength
+  ORACLE_SUCCESS:
+    TYPE: OracleSuccess
+    SUCCESS_DISTANCE: 3.0
+  ORACLE_NAVIGATION_ERROR:
+    TYPE: OracleNavigationError
 
-habitat:
-  seed: 12
-  environment:
-    max_episode_steps: 500
-    iterator_options:
-      max_scene_repeat_steps: 50000
-      shuffle: True
-  simulator:
-    agents:
-      main_agent:
-        sim_sensors:
-          rgb_sensor:
-            type: HabitatSimRGBSensor
-            width: 224
-            height: 224
-            hfov: 90
-          depth_sensor:
-            type: HabitatSimDepthSensor
-            width: 256
-            height: 256
-            hfov: 90
-            min_depth: 0.0
-            max_depth: 10.0
-            normalize_depth: True
-    forward_step_size: 0.25
-    turn_angle: 15
-    habitat_sim_v0:
-      gpu_device_id: 0
-  task:
-    actions:
-      no_op:
-        type: "NoOpAction"
-    measurements:
-      top_down_map:
-        type: TopDownMap
-      distance_to_goal:
-        type: DistanceToGoal
-        distance_to: POINT
-      success:
-        type: Success
-        success_distance: 3.0
-      spl:
-        type: SPL
-      trajectory_Length:
-        type: TrajectoryLength
-      oracle_success:
-        type: OracleSuccess
-      oracle_navigation_error:
-        type: OracleNavigationError
-
-  dataset:
-    type: R2RVLN-v1
-    split: val_unseen
-    scenes_dir: /data/vln-dependency/VLN-CE/scene_dataset
-    data_path: /data/vln-dependency/VLN-CE/datasets/r2r/{split}/{split}.json.gz
+DATASET:
+  TYPE: R2RVLN-v1
+  SPLIT: val_unseen
+  SCENES_DIR: /data/vln-dependency/VLN-CE/scene_dataset/
+  DATA_PATH: /data/vln-dependency/VLN-CE/datasets/r2r/{split}/{split}.json.gz
