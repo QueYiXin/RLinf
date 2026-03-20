@@ -41,7 +41,8 @@ class CMAConfig:
 
     # Image and action configs
     image_size: list[int] = field(default_factory=lambda: [256, 256, 3])
-    action_dim: int = 4
+    action_dim: int = 1
+    num_action_classes: int = 4
     state_dim: int = 0  # Not used in CMA, but kept for compatibility
     num_action_chunks: int = 1
     model_path: Optional[str] = None
@@ -80,6 +81,7 @@ class CMAConfig:
         for key, value in config_dict.items():
             if hasattr(self, key):
                 self.__setattr__(key, value)
+
         self._update_info()
 
     def _update_info(self):
@@ -125,7 +127,9 @@ class CMANet(nn.Module):
     https://arxiv.org/abs/2004.02857
     """
 
-    def __init__(self, cfg: CMAConfig, observation_space: spaces.Space = None):
+    def __init__(
+        self, cfg: CMAConfig, observation_space: Optional[spaces.Space] = None
+    ):
         super().__init__()
         self.cfg = cfg
 
@@ -190,8 +194,7 @@ class CMANet(nn.Module):
         )
 
         # Action embedding (for prev_action)
-        num_actions = cfg.action_dim
-        self.prev_action_embedding = nn.Embedding(num_actions + 1, 32)
+        self.prev_action_embedding = nn.Embedding(cfg.num_action_classes + 1, 32)
 
         hidden_size = cfg.hidden_size
         self._hidden_size = hidden_size
@@ -412,18 +415,19 @@ class CMAPolicy(nn.Module, BasePolicy):
 
         self.rnn_states = None
         self.prev_actions = None
-        self.not_done_masks = None
         self.prev_episode_id = None
-
         self.action_map = {
             0: "STOP",
             1: "MOVE_FORWARD",
             2: "TURN_LEFT",
             3: "TURN_RIGHT",
         }
+        assert len(self.action_map) == self.cfg.num_action_classes, (
+            "CMA action_map size must match num_action_classes"
+        )
 
         self.policy = CMABasePolicy(
-            net=CMANet(cfg, observation_space), dim_actions=cfg.action_dim
+            net=CMANet(cfg, observation_space), dim_actions=cfg.num_action_classes
         )
 
         assert self.cfg.add_value_head + self.cfg.add_q_head <= 1
@@ -434,19 +438,32 @@ class CMAPolicy(nn.Module, BasePolicy):
                 activation="relu",
             )
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict, strict=True, assign=False):
         if isinstance(state_dict, dict):
             if "state_dict" in state_dict:
                 state_dict = state_dict["state_dict"]
             elif "model_state_dict" in state_dict:
                 state_dict = state_dict["model_state_dict"]
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            if k.startswith("policy."):
-                new_state_dict[k[7:]] = v
+
+        policy_state_keys = set(self.policy.state_dict().keys())
+        value_head_state_keys = set()
+        if hasattr(self, "value_head"):
+            value_head_state_keys = set(self.value_head.state_dict().keys())
+
+        normalized_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith("policy.") or key.startswith("value_head."):
+                normalized_state_dict[key] = value
+            elif key in policy_state_keys:
+                normalized_state_dict[f"policy.{key}"] = value
+            elif key in value_head_state_keys:
+                normalized_state_dict[f"value_head.{key}"] = value
             else:
-                new_state_dict[k] = v
-        self.policy.load_state_dict(new_state_dict, strict=False)
+                normalized_state_dict[key] = value
+
+        return super().load_state_dict(
+            normalized_state_dict, strict=False, assign=assign
+        )
 
     @property
     def num_action_chunks(self):
@@ -495,22 +512,10 @@ class CMAPolicy(nn.Module, BasePolicy):
 
         return processed_env_obs
 
-    def reset_latent_state(self, batch_size, device):
-        self.rnn_states = torch.zeros(
-            batch_size,
-            self.policy.net.state_encoder.num_recurrent_layers
-            + self.policy.net.second_state_encoder.num_recurrent_layers,
-            self.cfg.hidden_size,
-            device=device,
-        )
-        self.prev_actions = torch.zeros(batch_size, 1, device=device, dtype=torch.long)
-        self.not_done_masks = torch.ones(
-            batch_size, 1, device=device, dtype=torch.uint8
-        )
-
     def predict_action_batch(
         self,
         env_obs,
+        mode="train",
         **kwargs,
     ):
         """Predict actions for a batch of observations."""
@@ -519,52 +524,77 @@ class CMAPolicy(nn.Module, BasePolicy):
         batch_size = env_obs["rgb"].shape[0]
         device = env_obs["rgb"].device
         current_episode_ids = env_obs["states"]
-        if self.prev_episode_id is None:
+
+        is_first_step = self.prev_episode_id is None
+        if is_first_step:
             self.prev_episode_id = current_episode_ids.clone()
-            self.reset_latent_state(batch_size, device)
+            self.rnn_states = torch.zeros(
+                batch_size,
+                self.policy.net.state_encoder.num_recurrent_layers
+                + self.policy.net.second_state_encoder.num_recurrent_layers,
+                self.cfg.hidden_size,
+                device=device,
+            )
+            self.prev_actions = torch.zeros(
+                batch_size, 1, device=device, dtype=torch.long
+            )
+            step_masks = torch.zeros_like(self.prev_actions, dtype=torch.uint8)
         else:
+            assert (
+                self.prev_actions is not None
+                and self.rnn_states is not None
+                and self.prev_episode_id is not None
+            ), "CMA recurrent state must be initialized."
+            step_masks = torch.ones_like(self.prev_actions, dtype=torch.uint8)
             reset_mask = current_episode_ids != self.prev_episode_id
             if reset_mask.any():
                 self.rnn_states[reset_mask] = 0
                 self.prev_actions[reset_mask] = 0
+                step_masks[reset_mask] = 0
                 self.prev_episode_id[reset_mask] = current_episode_ids[reset_mask]
 
+        pre_rnn_states = self.rnn_states.clone()
+        prev_actions = self.prev_actions.clone()
+        step_masks = step_masks.clone()
+
         features, rnn_states = self.policy.net(
-            env_obs, self.rnn_states, self.prev_actions, self.not_done_masks
+            env_obs, pre_rnn_states, prev_actions, step_masks
         )
         distribution = self.policy.action_distribution(features)
-
         if mode == "train":
             action = distribution.sample()
-        else:
+        elif mode == "eval":
             action = distribution.mode()
-        logprobs = distribution.logits.unsqueeze(1)
-
-        forward_inputs = {
-            "action": action,
-            "pre_rnn_states": self.rnn_states,
-            "env_obs_rgb": env_obs["rgb"],
-            "env_obs_depth": env_obs["depth"],
-            "env_obs_instruction": env_obs["instruction"],
-            "env_obs_states": env_obs["states"],
-            "masks": self.not_done_masks,
-            "prev_actions": self.prev_actions,
-        }
-
+        else:
+            raise NotImplementedError(f"{mode=}")
+        prev_logprobs = distribution.log_probs(action)
         self.rnn_states, self.prev_actions = rnn_states, action
+
         chunk_actions = []
         for i in range(batch_size):
             chunk_actions.append(
                 [self.action_map[a.item()] for a in action[i].cpu().numpy()]
             )
         chunk_actions = np.array(chunk_actions)
+
         if hasattr(self, "value_head"):
             chunk_values = self.value_head(features)
         else:
-            chunk_values = torch.zeros_like(logprobs[..., :1])
+            chunk_values = torch.zeros_like(prev_logprobs[..., :1])
+
+        forward_inputs = {
+            "action": action.clone(),
+            "pre_rnn_states": pre_rnn_states,
+            "prev_actions": prev_actions,
+            "masks": step_masks,
+            "env_obs_rgb": env_obs["rgb"].clone(),
+            "env_obs_depth": env_obs["depth"].clone(),
+            "env_obs_instruction": env_obs["instruction"].clone(),
+            "env_obs_states": env_obs["states"].clone(),
+        }
 
         result = {
-            "prev_logprobs": logprobs,
+            "prev_logprobs": prev_logprobs,
             "prev_values": chunk_values,
             "forward_inputs": forward_inputs,
         }
@@ -593,33 +623,34 @@ class CMAPolicy(nn.Module, BasePolicy):
         compute_values=True,
         **kwargs,
     ):
-        pre_rnn_states = forward_inputs["pre_rnn_states"]
-        env_obs = {}
-        env_obs["rgb"] = forward_inputs["env_obs_rgb"]
-        env_obs["depth"] = forward_inputs["env_obs_depth"]
-        env_obs["instruction"] = forward_inputs["env_obs_instruction"]
-        env_obs["states"] = forward_inputs["env_obs_states"]
-        masks = forward_inputs["masks"]
-        prev_actions = forward_inputs["prev_actions"]
+        obs = {
+            "rgb": forward_inputs["env_obs_rgb"],
+            "depth": forward_inputs["env_obs_depth"],
+            "instruction": forward_inputs["env_obs_instruction"],
+            "states": forward_inputs["env_obs_states"],
+        }
+        action = forward_inputs["action"].long()
+        if action.ndim == 1:
+            action = action.unsqueeze(-1)
 
-        features, rnn_states = self.policy.net(
-            env_obs, pre_rnn_states, prev_actions, masks
-        )
+        pre_rnn_states = forward_inputs["pre_rnn_states"].clone()
+        prev_actions = forward_inputs["prev_actions"].long().clone()
+        masks = forward_inputs["masks"].clone()
 
+        features, _ = self.policy.net(obs, pre_rnn_states, prev_actions, masks)
         distribution = self.policy.action_distribution(features)
 
         output_dict = {}
-
         if compute_logprobs:
-            logprobs = distribution.logits.unsqueeze(1)
+            logprobs = distribution.log_probs(action)
             output_dict.update(logprobs=logprobs)
-
         if compute_entropy:
             entropy = distribution.entropy()
+            if entropy.ndim == 1:
+                entropy = entropy.unsqueeze(-1)
             output_dict.update(entropy=entropy)
-
         if compute_values:
-            if getattr(self, "value_head", None):
+            if hasattr(self, "value_head"):
                 values = self.value_head(features)
                 output_dict.update(values=values)
             else:

@@ -188,9 +188,9 @@ class HabitatEnv(gym.Env):
 
         terminations[is_stop] = True
         # TODO: what if termination means failure? (e.g. robot falling down)
-        step_reward = self._calc_step_reward(terminations)
         infos = list_of_dict_to_dict_of_list(info_lists)
         infos = self._record_metrics(infos)
+        step_reward = self._calc_step_reward(terminations, infos["success"])
 
         truncations = self.elapsed_steps >= self.max_episode_steps
         dones_for_metric_save = terminations | truncations
@@ -363,8 +363,8 @@ class HabitatEnv(gym.Env):
         infos["_elapsed_steps"] = dones
         return obs, infos
 
-    def _calc_step_reward(self, terminations):
-        reward = self.cfg.reward_coef * terminations
+    def _calc_step_reward(self, terminations, success):
+        reward = self.cfg.reward_coef * terminations * success
         reward_diff = reward - self.prev_step_reward
         self.prev_step_reward = reward
 
